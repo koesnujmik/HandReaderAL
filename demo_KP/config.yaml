@@ -1,0 +1,18 @@
+
+chars_ctc: "_ &'.@abcdefghijklmnopqrstuvwxyz"
+# chars_ctc: "_ абвгдежзийклмнопрстуфхцчшщъыьэюяё"
+classes_ctc: ${len:${chars_ctc}}
+fe:
+  num_keypoints: 54
+  out_dim: 144
+mlp:
+  input_dim: 144
+  hidden_dim: 512
+  output_dim: 512
+decoder:
+  input_dim: 512
+  hidden_dim: 512
+  num_layers: 2
+  num_classes: ${classes_ctc}
+  bidirectional: true
+  return_outs: false

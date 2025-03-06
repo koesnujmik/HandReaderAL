@@ -1,0 +1,83 @@
+default_language_version:
+  python: python3
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.4.0
+    hooks:
+      # list of supported hooks: https://pre-commit.com/hooks.html
+      - id: requirements-txt-fixer
+      - id: check-docstring-first
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-docstring-first
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: detect-private-key
+      - id: check-executables-have-shebangs
+      - id: check-toml
+      - id: check-case-conflict
+      - id: check-added-large-files
+
+  # python code formatting
+  - repo: https://github.com/psf/black
+    rev: 23.1.0
+    hooks:
+      - id: black
+        exclude: ^externals/
+        args: [--line-length, "99"]
+
+  - repo: https://github.com/PyCQA/autoflake
+    rev: v1.4
+    hooks:
+      - id: autoflake
+        args: ['-r', '--in-place',
+               '--remove-all-unused-imports',
+               '--ignore-init-module-imports',
+               '--remove-unused-variables',
+               '--remove-duplicate-keys'
+              ]
+
+  # python import sorting
+  - repo: https://github.com/PyCQA/isort
+    rev: 5.12.0
+    hooks:
+      - id: isort
+        exclude: ^externals/
+        args: ["--profile", "black", "--filter-files"]
+
+  # python upgrading syntax to newer version
+  - repo: https://github.com/asottile/pyupgrade
+    rev: v3.3.1
+    hooks:
+      - id: pyupgrade
+        exclude: ^externals/
+        args: [--py38-plus]
+
+
+  # python check (PEP8), programming errors and code complexity
+  - repo: https://github.com/PyCQA/flake8
+    rev: 6.0.0
+    hooks:
+      - id: flake8
+        exclude: ^externals/
+        args:
+          [
+            "--max-line-length=120",
+            "--extend-ignore",
+            "E203,E402,E501,F401,F841,RST2,RST301,E741,RST499",
+            "--exclude",
+            "logs/*,data/*,externals/*",
+          ]
+        additional_dependencies: [flake8-rst-docstrings==0.3.0]
+
+
+  # word spelling linter
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.2.4
+    hooks:
+      - id: codespell
+        exclude: ^externals/
+        args:
+          - --skip=logs/**,data/**,*.ipynb
+          # - --ignore-words-list=abc,def
