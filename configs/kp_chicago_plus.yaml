@@ -1,0 +1,162 @@
+defaults:
+  - _self_
+  # - logger: null # set logger here or use command line (e.g. `python train.py logger=tensorboard`)
+  - paths: default
+  - hydra: default
+
+
+# task name, determines output directory path
+
+task_name: kp_cfswp_random
+
+# tags to help you identify your experiments
+# you can overwrite this in experiment configs
+# overwrite from command line with `python train.py tags="[first_tag, second_tag]"`
+tags: []
+
+seed: 10
+scheduler_cosine: False
+
+base:
+  device: cuda
+  chars_ctc: "_ &'.@abcdefghijklmnopqrstuvwxyz" # blank + classes
+  classes_ctc: ${len:${base.chars_ctc}}
+  epochs: 60
+
+
+datamodule:
+  _target_: src.data.KP.dataset_KP.KP_Datamodule
+  data_folder: "data/cfswp_landmark"
+  symmetry_fp: "data/symmetry.csv"
+  flip_aug: 0.5
+  inference_args: "data/inference_args.json"
+  batch_size: 4
+  num_workers: 16
+  test_df: "data/cfswp/test_fold.csv"
+  train_df: "data/cfswp/train_fold.csv"
+
+  tokenizer:
+    _target_: src.data.KP.Tokenizer
+    ctc: True
+    autoreg: False
+  inds_to_filter: ["pose", "hand"]
+
+
+
+model:
+  _target_: src.models.KP.models.MLP_LSTM_FE
+
+  fe:
+    _target_: src.models.KP.models.FeatureMapExtractorModel
+    num_keypoints: 54
+    out_dim: 144
+
+  mlp:
+    _target_: src.models.KP.models.MLP
+    input_dim: 144
+    hidden_dim: 512
+    output_dim: 512
+
+  decoder:
+    _target_: src.models.KP.models.RNNHead
+    input_dim: 512
+    hidden_dim: 512
+    num_layers: 2
+    num_classes: ${base.classes_ctc}
+    bidirectional: true
+    return_outs: false
+
+loss_prediction_model:
+  _target_: src.models.KP.models.Loss_Prediction
+
+  LPmodule:
+    _target_: src.models.KP.models.LossPredictionModule
+    input_dim: 512
+    hidden_dim: 512
+    num_layers: 2
+    bidirectional: true
+    ff_dim: 2048
+    return_outs: false
+    
+
+
+
+optimizer:
+  _target_: torch.optim.AdamW
+  lr: 0.0001
+  _partial_: true
+
+
+scheduler:
+  _target_: torch.optim.lr_scheduler.MultiStepLR
+  milestones: [25, 40]
+  gamma: 0.1
+  _partial_: true
+
+trainer:
+  _target_: src.models.KP.trainers.CTCTrainer
+  _partial_: true
+  loss_fn:
+    _target_: torch.nn.CTCLoss
+    blank: 0
+    reduction: sum
+    zero_infinity: true
+  decoder:
+    _target_: src.utils.ctc_decoder.Decoder
+    labels: ${base.chars_ctc}
+    blank_index: 0
+  device: ${base.device}
+  grad_accumulate: 1.0
+  val_every: 1
+  path_to_save_weights: "runs/${task_name}/weights"
+  get_metric_train: true
+  # path_to_states: <path_to_states> # if want to retrain model
+  # resume_path: <path_to_resume_weights> # if want to continue training
+
+
+test:
+  tester:
+    _target_: src.models.KP.tester.KPTester
+    decoder:
+      _target_: src.utils.ctc_decoder.Decoder
+      labels: ${base.chars_ctc}
+      blank_index: 0
+
+  datamodule:
+    _target_: src.data.KP.dataset_KP.KP_Datamodule
+    data_folder: "data/cfswp_landmark"
+    symmetry_fp: "data/symmetry.csv"
+    flip_aug: 0.
+    inference_args: "data/inference_args.json"
+    batch_size: 1
+    num_workers: 16
+    test_df: "data/cfswp/test_fold.csv"
+    train_df: "data/cfswp/train_fold.csv"
+    tokenizer:
+      _target_: src.data.KP.Tokenizer
+      ctc: True
+      autoreg: False
+    inds_to_filter: ["pose", "hand"]
+
+  device: "cuda"
+  weights: "best_model/chicago+/kp/best.pt"
+
+  split: "test"
+
+wandb:
+  enable: True         # True, False
+  key: 35f83d6e91dd0be0f647ee49998e16bcdd5164d3
+  project: "handreader" # project name
+  entity: null          # 팀/계정명 (없으면 null)
+  mode: "online"        # "offline" / "disabled" 가능
+  group: ${task_name}   # 같은 태스크 묶기
+  notes: ""
+
+sampler:
+  _target_: src.utils.Active_Learning_Sampler
+  _partial_: true                 # train_set은 코드에서 주입
+  device: ${base.device}
+  path_to_save_indices: "runs/${task_name}/indices"
+  path_to_initial10: "data/cfswp/initial10.csv"
+  budget_ratio: 0.05               # 라운드당 비율
+  method: "random"       # "random", "entropy", ...
