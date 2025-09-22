@@ -48,13 +48,13 @@ You can use downloaded trained models, otherwise select a parameters for trainin
 To start train select config for znaki dataset, *_znaki.yaml can be used, specified all needed paths, do the same for *_chicago.yaml. Then run:
 
 ```bash
-python src/train.py --config-name <cgf_name.yaml>`
+python src/train.py --config-name <cgf_name.yaml>
 ```
 
 example to start training model for kp_rgb with dataset Znaki:
 
 ```bash
-python src/train.py --config-name kp_rgb_Znaki.yaml`
+python src/train.py --config-name kp_rgb_Znaki.yaml
 ```
 
 
