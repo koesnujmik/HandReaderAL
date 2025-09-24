@@ -909,6 +909,32 @@ class Active_Learning_Sampler():
             # 모든 배치 스코어 연결 후 Top-K (std 큰 순)
             S = torch.cat(scores_all, dim=0).detach().cpu()
         
+
+        elif self.method == 'decode_len':
+            model.eval()
+            scores_all = []
+            with torch.no_grad():
+                for batch in tqdm(unlabeled_loader):
+                    inputs, _, input_lengths, _, _ = batch
+                    inputs, input_lengths = (
+                        inputs.to(self.device),
+                        input_lengths.to(self.device),
+                    )
+                    
+                    logits = model(inputs)
+                    probs  = F.softmax(logits, dim=-1)
+                    B = probs.size(0)
+
+                    batch_scores = []
+                    for b in range(B):
+                        seq = probs[b, : input_lengths[b].item()].detach().cpu().numpy()
+                        pred = decoder.greedy_decode(seq)
+                        batch_scores.append(len("".join(pred)) / input_lengths[b].item())
+
+                    scores_all.append(torch.tensor(batch_scores, dtype=torch.float32))
+        
+            S = torch.cat(scores_all)
+        
         top_scores, topk_idxs = torch.topk(S, self.budget)
         self.selected = self.unlabeled_idxs[topk_idxs.detach().cpu().numpy()]
         scores = pd.Series(top_scores.numpy(), index=self.selected, dtype="float32")

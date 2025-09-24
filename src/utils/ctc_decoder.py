@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import torch.utils.data as tud
 from tqdm.auto import tqdm
+from collections import namedtuple
 
 
 def beam_search(model, X, poses, predictions=20, beam_width=5, batch_size=128, progress_bar=0):
@@ -219,3 +220,159 @@ class Decoder:
         if digit is False:
             pred = list(map(lambda x: self.int_to_char[x], pred))
         return pred
+    
+
+    def beam_probs(self, prob, beam_size):
+        """
+        Beam search decoding
+
+        Parameters
+        ----------
+        prob: [seq_len, num_labels+1], numpy array
+        beam_size: int
+
+        Returns
+        -------
+        seqs_str: list
+        log_scores: tensor
+        """
+        seqlen = len(prob)
+        beam_idx = np.argsort(prob[0, :])[-beam_size:].tolist()
+
+        beam_prob = list(map(lambda x: math.log(prob[0, x]), beam_idx))
+        beam_idx = list(map(lambda x: [x], beam_idx))
+        for t in range(1, seqlen):
+            topk_idx = np.argsort(prob[t, :])[-beam_size:].tolist()
+            topk_prob = list(map(lambda x: prob[t, x], topk_idx))
+            aug_beam_prob, aug_beam_idx = [], []
+            for b in range(beam_size * beam_size):
+                aug_beam_prob.append(beam_prob[int(b / beam_size)])
+                aug_beam_idx.append(list(beam_idx[int(b / beam_size)]))
+            # allocate
+            for b in range(beam_size * beam_size):
+                _, j = int(b / beam_size), int(b % beam_size)
+                aug_beam_idx[b].append(topk_idx[j])
+                aug_beam_prob[b] = aug_beam_prob[b] + math.log(topk_prob[j])
+            # merge
+            merge_beam_idx, merge_beam_prob = [], []
+            for b in range(beam_size * beam_size):
+                if aug_beam_idx[b][-1] == aug_beam_idx[b][-2]:
+                    beam, beam_prob = aug_beam_idx[b][:-1], aug_beam_prob[b]
+                elif aug_beam_idx[b][-2] == self.blank_index:
+                    beam, beam_prob = (
+                        aug_beam_idx[b][:-2] + [aug_beam_idx[b][-1]],
+                        aug_beam_prob[b],
+                    )
+                else:
+                    beam, beam_prob = aug_beam_idx[b], aug_beam_prob[b]
+                beam_str = list(map(lambda x: self.int_to_char[x], beam))
+                if beam_str not in merge_beam_idx:
+                    merge_beam_idx.append(beam_str)
+                    merge_beam_prob.append(beam_prob)
+                else:
+                    idx = merge_beam_idx.index(beam_str)
+                    merge_beam_prob[idx] = np.logaddexp(merge_beam_prob[idx], beam_prob)
+            
+            ntopk_idx = np.argsort(np.array(merge_beam_prob))[-beam_size:].tolist()
+
+            beam_idx = list(map(lambda x: merge_beam_idx[x], ntopk_idx))
+            for b in range(len(beam_idx)):
+                beam_idx[b] = list(map(lambda x: self.char_to_int[x], beam_idx[b]))
+            beam_prob = list(map(lambda x: merge_beam_prob[x], ntopk_idx))
+
+        seqs_str = []
+        for seq in beam_idx:
+            if len(seq) > 0 and seq[-1] == self.blank_index:
+                seq = seq[:-1]
+            seqs_str.append("".join(self.int_to_char[tok] for tok in seq))
+
+        log_scores = torch.tensor(beam_prob, dtype=torch.float32)
+        return seqs_str, log_scores
+    
+    def beam_probs_path(self, prob, beam_size):
+        """
+        프레임별 실제 활성화를 추적하는 상세 버전
+        """
+        seqlen = len(prob)
+        
+        # Beam 상태: (시퀀스, 확률, 프레임별_레이블)
+        BeamState = namedtuple('BeamState', ['seq', 'prob', 'frame_labels'])
+        
+        # 초기 beam 생성
+        initial_beams = []
+        for idx in np.argsort(prob[0, :])[-beam_size:]:
+            initial_beams.append(BeamState(
+                seq=[idx] if idx != self.blank_index else [],
+                prob=math.log(prob[0, idx]),
+                frame_labels=[idx]  # 모든 프레임 레이블 저장
+            ))
+        
+        beams = initial_beams
+        
+        # 각 시간 단계 처리
+        for t in range(1, seqlen):
+            candidates = []
+            
+            for beam in beams:
+                # 현재 beam에서 top-k 확장
+                for new_idx in np.argsort(prob[t, :])[-beam_size:]:
+                    new_prob = beam.prob + math.log(prob[t, new_idx])
+                    new_frame_labels = beam.frame_labels + [new_idx]
+                    
+                    # CTC 디코딩 규칙 적용
+                    if new_idx == self.blank_index:
+                        new_seq = beam.seq
+                    elif len(beam.frame_labels) > 0 and beam.frame_labels[-1] == new_idx:
+                        new_seq = beam.seq  # 같은 문자 반복
+                    elif len(beam.frame_labels) > 0 and beam.frame_labels[-1] == self.blank_index:
+                        new_seq = beam.seq + [new_idx]  # blank 후 새 문자
+                    else:
+                        new_seq = beam.seq + [new_idx]  # 다른 문자
+                    
+                    candidates.append(BeamState(new_seq, new_prob, new_frame_labels))
+            
+            # 동일 시퀀스 병합 및 top-k 선택
+            merged = {}
+            for cand in candidates:
+                key = tuple(cand.seq)
+                if key not in merged:
+                    merged[key] = cand
+                else:
+                    # 확률 합산
+                    merged[key] = BeamState(
+                        cand.seq,
+                        np.logaddexp(merged[key].prob, cand.prob),
+                        merged[key].frame_labels  # 첫 번째 경로의 프레임 유지
+                    )
+            
+            # Top-k 선택
+            beams = sorted(merged.values(), key=lambda x: x.prob, reverse=True)[:beam_size]
+        
+        # 최종 결과 생성 with alignment
+        results = []
+        for beam in beams:
+            # 프레임 레이블에서 실제 문자 위치 추출
+            alignment = []
+            char_frames = []
+            
+            for t, label in enumerate(beam.frame_labels):
+                if label != self.blank_index:
+                    char_frames.append((t, self.int_to_char[label]))
+            
+            # 연속된 프레임을 구간으로 병합
+            if char_frames:
+                current_char = char_frames[0][1]
+                start = char_frames[0][0]
+                
+                for i in range(1, len(char_frames)):
+                    if char_frames[i][1] != current_char:
+                        alignment.append((current_char, start, char_frames[i-1][0]))
+                        current_char = char_frames[i][1]
+                        start = char_frames[i][0]
+                
+                alignment.append((current_char, start, char_frames[-1][0]))
+            
+            seq_str = "".join(self.int_to_char[tok] for tok in beam.seq)
+            results.append((seq_str, beam.prob, alignment))
+        
+        return results
